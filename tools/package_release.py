@@ -1,6 +1,7 @@
-"""Build the Windows drag-and-drop release of Armed Citizens Mod."""
+"""Build the Windows releases of the shared ASI loader and Armed Citizens Mod."""
 
 import argparse
+from contextlib import contextmanager
 from hashlib import sha256
 from importlib.metadata import distribution
 from io import BytesIO
@@ -23,6 +24,7 @@ LOADER_RELEASE = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/dow
 LOADER_ASSET = "Ultimate-ASI-Loader-NoPDB_x64.zip"
 LOADER_SHA256 = "0f6da6fdbe462986b788518d21ef43c79012059ef726266a1bc0f94168dd6c2e"
 LOADER_LICENSE = "https://raw.githubusercontent.com/ThirteenAG/Ultimate-ASI-Loader/v10.0.5/license"
+LOADER_PACKAGE_VERSION = "1.0.0"
 
 
 def msvc_environment():
@@ -66,18 +68,34 @@ def loader_files():
         return dll, response.read()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--asi", action="store_true", help="Package an ASI plugin and Ultimate ASI Loader.")
-    args = parser.parse_args()
-    if sys.platform != "win32" or sys.maxsize <= 2**32:
-        raise SystemExit("Build the release with 64-bit Python on Windows.")
-    variant = "asi" if args.asi else "windows"
-    output = ROOT / "dist" / f"Armed-Citizens-Mod-v0.44.0-{variant}.zip"
+@contextmanager
+def release_archive(name):
+    output = ROOT / "dist" / name
     output.parent.mkdir(exist_ok=True)
+    # Stage beside the final archive so the rename works across drive letters.
+    with tempfile.TemporaryDirectory(prefix="package-", dir=output.parent) as staging:
+        archive = Path(staging) / output.name
+        with ZipFile(archive, "w", compression=ZIP_DEFLATED, compresslevel=9) as package:
+            yield package
+        os.replace(archive, output)
+    print(f"Packaged {output} ({output.stat().st_size:,} bytes).")
+
+
+def package_loader():
+    loader, license_text = loader_files()
+    with release_archive(f"Zombies-Arent-Real-Mod-Loader-v{LOADER_PACKAGE_VERSION}-windows-x64.zip") as package:
+        package.write(ROOT / "tools" / "loader-readme.md", "README.md")
+        package.writestr("winhttp.dll", loader)
+        package.writestr("licenses/Ultimate-ASI-Loader.txt", license_text)
+
+
+def package_armed_citizens(asi):
+    if sys.platform != "win32" or sys.maxsize <= 2**32:
+        raise SystemExit("Build Armed Citizens with 64-bit Python on Windows.")
+    variant = "asi" if asi else "windows"
     with tempfile.TemporaryDirectory(prefix="armed-citizens-release-") as temp:
         work = Path(temp)
-        plugin = build_asi(work) if args.asi else None
+        plugin = build_asi(work) if asi else None
         objects = sorted({obj for build in SUPPORTED_BUILDS.values() for obj in compile_objects(work, build)})
         command = [
             sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--noupx",
@@ -88,31 +106,35 @@ def main():
             command.extend(("--add-data", f"{obj};."))
         subprocess.run([*command, str(MOD_DIR / "launch.py")], cwd=work, check=True)
 
-        # Stage beside the final archive so the rename works across drive letters.
-        with tempfile.TemporaryDirectory(prefix="package-", dir=output.parent) as staging:
-            archive = Path(staging) / output.name
-            with ZipFile(archive, "w", compression=ZIP_DEFLATED, compresslevel=9) as package:
-                for name in ("README.md", "LICENSE"):
-                    package.write(ROOT / name, name)
-                if plugin:
-                    loader, loader_license = loader_files()
-                    package.write(plugin, "scripts/" + plugin.name)
-                    package.writestr("winhttp.dll", loader)
-                    package.writestr("licenses/Ultimate-ASI-Loader.txt", loader_license)
-                else:
-                    package.write(ROOT / "Play Armed Citizens Mod.cmd", "Play Armed Citizens Mod.cmd")
-                package.write(work / "armed-citizens-launcher.exe", "starting_militia/armed-citizens-launcher.exe")
-                for path in (MOD_DIR / "settings.ini", MOD_DIR / "san_francisco_gis.bin", *sorted((MOD_DIR / "gis").glob("*.bin"))):
-                    package.write(path, path.relative_to(ROOT).as_posix())
-                python_license = Path(sys.base_prefix) / "LICENSE.txt"
-                if python_license.is_file():
-                    package.write(python_license, "licenses/Python.txt")
-                pyinstaller = distribution("pyinstaller")
-                for license_file in pyinstaller.files or ():
-                    if license_file.name.upper().startswith(("COPYING", "LICENSE")) and license_file.parts[0].endswith(".dist-info"):
-                        package.write(pyinstaller.locate_file(license_file), "licenses/" + license_file.name)
-            os.replace(archive, output)
-    print(f"Packaged {output} ({output.stat().st_size:,} bytes).")
+        with release_archive(f"Armed-Citizens-Mod-v0.44.0-{variant}.zip") as package:
+            for name in ("README.md", "LICENSE"):
+                package.write(ROOT / name, name)
+            if plugin:
+                package.write(plugin, "scripts/" + plugin.name)
+            else:
+                package.write(ROOT / "Play Armed Citizens Mod.cmd", "Play Armed Citizens Mod.cmd")
+            package.write(work / "armed-citizens-launcher.exe", "starting_militia/armed-citizens-launcher.exe")
+            for path in (MOD_DIR / "settings.ini", MOD_DIR / "san_francisco_gis.bin", *sorted((MOD_DIR / "gis").glob("*.bin"))):
+                package.write(path, path.relative_to(ROOT).as_posix())
+            python_license = Path(sys.base_prefix) / "LICENSE.txt"
+            if python_license.is_file():
+                package.write(python_license, "licenses/Python.txt")
+            pyinstaller = distribution("pyinstaller")
+            for license_file in pyinstaller.files or ():
+                if license_file.name.upper().startswith(("COPYING", "LICENSE")) and license_file.parts[0].endswith(".dist-info"):
+                    package.write(pyinstaller.locate_file(license_file), "licenses/" + license_file.name)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    releases = parser.add_mutually_exclusive_group()
+    releases.add_argument("--loader", action="store_true", help="Package Ultimate ASI Loader for the game.")
+    releases.add_argument("--asi", action="store_true", help="Package the Armed Citizens ASI plugin.")
+    args = parser.parse_args()
+    if args.loader:
+        package_loader()
+    else:
+        package_armed_citizens(args.asi)
 
 
 if __name__ == "__main__":
