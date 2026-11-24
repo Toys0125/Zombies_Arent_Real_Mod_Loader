@@ -2,7 +2,7 @@
 
 This project packages the Windows x64 setup for loading ASI plugins in *Zombies Aren't Real*. It uses Ultimate ASI Loader as `winhttp.dll` in the game folder. Put compatible x64 `.asi` files in the game's shared `scripts` folder and start the game with **Play** in Steam. Each plugin can have its own game version requirements and configuration.
 
-The loader and Armed Citizens are separate downloads. The loader was tested with **Steam v0.44.0 on Windows x64**. [Mod Loader release](https://github.com/Toys0125/Zombies_Arent_Real_Mod_Loader/releases/tag/loader-v1.0.0) · [Armed Citizens release](https://github.com/Toys0125/Zombies_Arent_Real_Mod_Loader/releases/tag/armed-citizens-v1.0.0)
+The loader is available on its own and in an all-in-one Armed Citizens ZIP. It was tested with **Steam v0.44.0 on Windows x64**. [Mod Loader release](https://github.com/Toys0125/Zombies_Arent_Real_Mod_Loader/releases/tag/loader-v1.0.0) · [Armed Citizens release](https://github.com/Toys0125/Zombies_Arent_Real_Mod_Loader/releases/tag/armed-citizens-v1.0.0)
 
 ## Armed Citizens Mod
 
@@ -12,11 +12,10 @@ Armed Citizens is available as an ASI plugin. Civilians can start as militia and
 
 The ASI release was tested on **Steam v0.44.0, Windows x64**. The plugin also includes compatibility code for Steam v0.43.1, which was build-checked for this release.
 
-1. Extract **Armed-Citizens-Mod-v0.44.0-asi.zip**.
+1. Choose **Armed-Citizens-Mod-v0.44.0-asi-with-loader.zip** for a fresh install, or **Armed-Citizens-Mod-v0.44.0-asi.zip** if you already have a compatible x64 ASI loader that calls `InitializeASI`.
 2. In Steam, right-click *Zombies Aren't Real* in your Library and choose **Manage → Browse local files**. This opens the folder containing `zombies-arent-real.exe`.
-3. If you need the ASI loader, copy `winhttp.dll` from the separate Mod Loader ZIP into the game folder. If you already use a compatible x64 ASI loader that calls `InitializeASI`, keep it.
-4. Copy `scripts` and `starting_militia` from the Armed Citizens ZIP into the same folder. Keep a copy of your existing `starting_militia/settings.ini` if you customized it.
-5. Launch the game from Steam. To confirm the mod loaded, open **Settings → Mods** or check `starting_militia/asi.log`.
+3. Extract `scripts` and `starting_militia` into the game folder. The all-in-one ZIP also includes `winhttp.dll`, which goes next to the game's executable. Keep a copy of your existing `starting_militia/settings.ini` if you customized it.
+4. Launch the game from Steam. To confirm the mod loaded, open **Settings → Mods** or check `starting_militia/asi.log`.
 
 These files should be in your game folder before the first launch.
 
@@ -64,7 +63,7 @@ If the game reports a version mismatch, check that both players enabled co-op an
 
 The source launcher runs with [Python 3.9 or newer](https://www.python.org/downloads/windows/) and [LLVM clang](https://github.com/llvm/llvm-project/releases). Put `python` on PATH and put `clang.exe` on PATH or in `C:\Program Files\LLVM\bin`. Copy the repo's launcher and `starting_militia` folder into the game folder. Use the same double-click launcher or run `python .\starting_militia\launch.py --build-only`.
 
-Run `python tools/package_release.py --loader` to download and package the pinned, checksum-verified x64 build of [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader). To package Armed Citizens, install [PyInstaller](https://pyinstaller.org/), LLVM, and Visual Studio Build Tools with **Desktop development with C++**, then run `python tools/package_release.py --asi`. Omit the option to package the standalone launcher. ZIPs are written to `dist/`.
+Run `python tools/package_release.py --loader` to download and package the pinned, checksum-verified x64 build of [Ultimate ASI Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader). To package Armed Citizens, install [PyInstaller](https://pyinstaller.org/), LLVM, and Visual Studio Build Tools with **Desktop development with C++**, then run `python tools/package_release.py --asi`. After building both ZIPs, run `python tools/package_release.py --bundle` for the all-in-one ZIP. Omit the option to package the standalone launcher. ZIPs are written to `dist/`.
 
 ### GIS sources
 

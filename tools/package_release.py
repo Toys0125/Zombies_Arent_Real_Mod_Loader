@@ -25,6 +25,10 @@ LOADER_ASSET = "Ultimate-ASI-Loader-NoPDB_x64.zip"
 LOADER_SHA256 = "0f6da6fdbe462986b788518d21ef43c79012059ef726266a1bc0f94168dd6c2e"
 LOADER_LICENSE = "https://raw.githubusercontent.com/ThirteenAG/Ultimate-ASI-Loader/v10.0.5/license"
 LOADER_PACKAGE_VERSION = "1.0.0"
+GAME_VERSION = "0.44.0"
+LOADER_ARCHIVE = f"Zombies-Arent-Real-Mod-Loader-v{LOADER_PACKAGE_VERSION}-windows-x64.zip"
+PLUGIN_ARCHIVE = f"Armed-Citizens-Mod-v{GAME_VERSION}-asi.zip"
+BUNDLE_ARCHIVE = f"Armed-Citizens-Mod-v{GAME_VERSION}-asi-with-loader.zip"
 
 
 def msvc_environment():
@@ -83,16 +87,31 @@ def release_archive(name):
 
 def package_loader():
     loader, license_text = loader_files()
-    with release_archive(f"Zombies-Arent-Real-Mod-Loader-v{LOADER_PACKAGE_VERSION}-windows-x64.zip") as package:
+    with release_archive(LOADER_ARCHIVE) as package:
         package.write(ROOT / "tools" / "loader-readme.md", "README.md")
         package.writestr("winhttp.dll", loader)
         package.writestr("licenses/Ultimate-ASI-Loader.txt", license_text)
 
 
+def package_bundle():
+    dist = ROOT / "dist"
+    with ZipFile(dist / PLUGIN_ARCHIVE) as plugin, ZipFile(dist / LOADER_ARCHIVE) as loader:
+        if {"winhttp.dll", "licenses/Ultimate-ASI-Loader.txt"} & set(plugin.namelist()):
+            raise ValueError("Rebuild the plugin-only archive with --asi before creating the bundle.")
+        # Keep the shipped binaries identical in both install options.
+        with release_archive(BUNDLE_ARCHIVE) as package:
+            package.write(ROOT / "README.md", "README.md")
+            for name in plugin.namelist():
+                if name != "README.md":
+                    package.writestr(name, plugin.read(name))
+            for name in ("winhttp.dll", "licenses/Ultimate-ASI-Loader.txt"):
+                package.writestr(name, loader.read(name))
+
+
 def package_armed_citizens(asi):
     if sys.platform != "win32" or sys.maxsize <= 2**32:
         raise SystemExit("Build Armed Citizens with 64-bit Python on Windows.")
-    variant = "asi" if asi else "windows"
+    archive = PLUGIN_ARCHIVE if asi else f"Armed-Citizens-Mod-v{GAME_VERSION}-windows.zip"
     with tempfile.TemporaryDirectory(prefix="armed-citizens-release-") as temp:
         work = Path(temp)
         plugin = build_asi(work) if asi else None
@@ -106,7 +125,7 @@ def package_armed_citizens(asi):
             command.extend(("--add-data", f"{obj};."))
         subprocess.run([*command, str(MOD_DIR / "launch.py")], cwd=work, check=True)
 
-        with release_archive(f"Armed-Citizens-Mod-v0.44.0-{variant}.zip") as package:
+        with release_archive(archive) as package:
             for name in ("README.md", "LICENSE"):
                 package.write(ROOT / name, name)
             if plugin:
@@ -130,9 +149,12 @@ def main():
     releases = parser.add_mutually_exclusive_group()
     releases.add_argument("--loader", action="store_true", help="Package Ultimate ASI Loader for the game.")
     releases.add_argument("--asi", action="store_true", help="Package the Armed Citizens ASI plugin.")
+    releases.add_argument("--bundle", action="store_true", help="Combine the built loader and plugin ZIPs.")
     args = parser.parse_args()
     if args.loader:
         package_loader()
+    elif args.bundle:
+        package_bundle()
     else:
         package_armed_citizens(args.asi)
 
