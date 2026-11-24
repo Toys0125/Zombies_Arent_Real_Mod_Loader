@@ -151,7 +151,7 @@ def menu_settings_data(rules, allow_coop, chances, enabled):
 C_OBJECT_NAMES = ("inferred_building_uses.obj", "coop_rules.obj", "spawn_info.obj", "mod_settings.obj")
 
 
-def compile_objects(directory, build):
+def compile_objects(directory, build, *, native_asi=False):
     clang = shutil.which("clang")
     if not clang:
         clang = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "LLVM/bin/clang.exe"
@@ -171,18 +171,18 @@ def compile_objects(directory, build):
         subprocess.run(
             [*target, "-O2", "-Wall", "-Wextra", "-Werror", "-ffreestanding", "-fno-stack-protector",
              "-fno-builtin", "-fno-math-errno", "-funwind-tables", "-fno-addrsig",
-             "-fno-vectorize", "-fno-slp-vectorize",
+             "-fno-vectorize", "-fno-slp-vectorize", *(["-DNATIVE_ASI"] if native_asi else []),
              "-c", MOD_DIR / obj.with_suffix(".c").name, "-o", obj],
             check=True,
         )
     return assembly, *c_objects
 
 
-def assemble(directory, build):
+def assemble(directory, build, *, native_asi=False):
     objects = (
         [Path(sys._MEIPASS) / name for name in (f"starting_militia-{build.version}.obj", *C_OBJECT_NAMES)]
         if getattr(sys, "frozen", False)
-        else compile_objects(directory, build)
+        else compile_objects(directory, build, native_asi=native_asi)
     )
     code, labels, relocs, pdata_ranges = bytearray(), {}, [], []
     for obj_path in objects:
@@ -244,8 +244,84 @@ def append_coff_object(obj, code, labels, relocs, pdata_ranges):
             relocs.append((output_offset + pos, symbols[index], kind))
 
 
+def append_unwind_info(code, labels, base, stock_unwind):
+    code.extend(bytes(align(len(code), 4) - len(code)))
+    battle_unwind = base + len(code)
+    if code[labels["battle_start"]:labels["battle_start"] + 4] != bytes.fromhex("48 83 ec 28"):
+        raise ValueError("Battle-start prologue no longer matches its unwind information.")
+    code.extend(bytes.fromhex("01 04 01 00 04 42 00 00"))
+    arming_unwind = base + len(code)
+    code.extend(stock_unwind("sample_civilian"))
+    tick_unwind = base + len(code)
+    code.extend(stock_unwind("add_militia_after_tick"))
+    ranking_unwind = base + len(code)
+    code.extend(stock_unwind("rank_completed_battle"))
+    recount_unwind = base + len(code)
+    # The recount detour runs inside the stock frame. Describe its saved
+    # XMM6-8, 0xc8-byte allocation and eight saved general registers.
+    code.extend(bytes.fromhex(
+        "01 00 10 00  00 68 09 00  00 78 0a 00  00 88 0b 00  00 01 19 00 "
+        "00 30  00 50  00 70  00 60  00 c0  00 d0  00 e0  00 f0"
+    ))
+    toolbar_unwind = base + len(code)
+    code.extend(stock_unwind("add_building_types_button"))
+    battle_toolbar_unwind = base + len(code)
+    code.extend(stock_unwind("append_battle_view_button"))
+    color_unwind = base + len(code)
+    # The native color routine has no .pdata entry. Its frame at the hook
+    # holds XMM6–15, eight general registers and a 0x100f8-byte allocation.
+    code.extend(bytes.fromhex(
+        "01 00 1e 00 "
+        "00 68 05 10  00 78 06 10  00 88 07 10  00 98 08 10  00 a8 09 10 "
+        "00 b8 0a 10  00 c8 0b 10  00 d8 0c 10  00 e8 0d 10  00 f8 0e 10 "
+        "00 01 1f 20  00 30  00 50  00 70  00 60  00 c0  00 d0  00 e0  00 f0"
+    ))
+    building_color_unwind = base + len(code)
+    # The final color lookup saves RSI, RDI, RBP and RBX.
+    code.extend(bytes.fromhex("01 00 04 00 00 30 00 50 00 70 00 60"))
+    statpanel_unwind = base + len(code)
+    code.extend(stock_unwind("statpanel_building_use"))
+    key_panel_unwind = base + len(code)
+    code.extend(stock_unwind("draw_building_type_key_panel"))
+    key_text_unwind = base + len(code)
+    code.extend(stock_unwind("draw_building_type_key_text"))
+    legend_unwind = base + len(code)
+    code.extend(bytes.fromhex("01 08 03 00 08 01 12 00 01 30 00 00"))
+    invalidate_unwind = base + len(code)
+    code.extend(stock_unwind("invalidate_inferred_building_uses"))
+    settings_unwind = {}
+    for name in SETTINGS_HOOKS:
+        settings_unwind[name] = base + len(code)
+        code.extend(stock_unwind(name))
+
+    injected_functions = []
+    for name, unwind in (
+        ("battle_start", battle_unwind),
+        ("sample_civilian", arming_unwind),
+        ("militia_source", arming_unwind),
+        ("count_living_militia", recount_unwind),
+        ("add_militia_after_tick", tick_unwind),
+        ("rank_completed_battle", ranking_unwind),
+        ("add_building_types_button", toolbar_unwind),
+        ("append_battle_view_button", battle_toolbar_unwind),
+        ("draw_three_view_buttons", toolbar_unwind),
+        ("lower_click_paint_rows", toolbar_unwind),
+        ("apply_building_type_colors", color_unwind),
+        ("prefer_building_type_color", building_color_unwind),
+        ("statpanel_building_use", statpanel_unwind),
+        ("draw_building_type_key_panel", key_panel_unwind),
+        ("draw_building_type_key_text", key_text_unwind),
+        ("draw_building_type_key", legend_unwind),
+        ("invalidate_inferred_building_uses", invalidate_unwind),
+        *settings_unwind.items(),
+    ):
+        if name in labels:
+            injected_functions.append((base + labels[name], base + labels[name + "_end"], unwind))
+    return injected_functions
+
+
 def patch_executable(stock, build, code, labels, relocs, pdata_ranges, rules, allow_coop, gis_maps=(),
-                     *, chances=None, runtime_state=None, enabled=True):
+                     *, chances=None, enabled=True):
     pe = struct.unpack_from("<I", stock, 0x3C)[0]
     section_count = struct.unpack_from("<H", stock, pe + 6)[0]
     optional_size = struct.unpack_from("<H", stock, pe + 20)[0]
@@ -257,13 +333,9 @@ def patch_executable(stock, build, code, labels, relocs, pdata_ranges, rules, al
     ]
     section_alignment, file_alignment = struct.unpack_from("<II", stock, optional + 32)
     section_header = section_table + 40 * section_count
-    if runtime_state is None and section_header + 80 > min(section[4] for section in sections if section[4]):
+    if section_header + 80 > min(section[4] for section in sections if section[4]):
         raise ValueError("No room for the Armed Citizens Mod PE section header.")
     state = align(max(section[2] + max(section[1], section[3]) for section in sections), section_alignment)
-    if runtime_state is not None:
-        if not state <= runtime_state < 0x70000000 or runtime_state % section_alignment:
-            raise ValueError("Invalid ASI patch allocation.")
-        state = runtime_state
     base = align(state + STATE_SIZE, section_alignment)
 
     def file_offset(rva):
@@ -332,83 +404,11 @@ def patch_executable(stock, build, code, labels, relocs, pdata_ranges, rules, al
                 return bytes.fromhex("21 00 00 00") + struct.pack("<III", *record)
         raise ValueError(f"Missing stock unwind information for {hook_name}.")
 
-    code.extend(bytes(align(len(code), 4) - len(code)))
-    battle_unwind = base + len(code)
-    if code[labels["battle_start"]:labels["battle_start"] + 4] != bytes.fromhex("48 83 ec 28"):
-        raise ValueError("Battle-start prologue no longer matches its unwind information.")
-    code.extend(bytes.fromhex("01 04 01 00 04 42 00 00"))
-    arming_unwind = base + len(code)
-    code.extend(stock_unwind("sample_civilian"))
-    tick_unwind = base + len(code)
-    code.extend(stock_unwind("add_militia_after_tick"))
-    ranking_unwind = base + len(code)
-    code.extend(stock_unwind("rank_completed_battle"))
-    recount_unwind = base + len(code)
-    # The recount detour runs inside the stock frame. Describe its saved
-    # XMM6-8, 0xc8-byte allocation and eight saved general registers.
-    code.extend(bytes.fromhex(
-        "01 00 10 00  00 68 09 00  00 78 0a 00  00 88 0b 00  00 01 19 00 "
-        "00 30  00 50  00 70  00 60  00 c0  00 d0  00 e0  00 f0"
-    ))
-    toolbar_unwind = base + len(code)
-    code.extend(stock_unwind("add_building_types_button"))
-    battle_toolbar_unwind = base + len(code)
-    code.extend(stock_unwind("append_battle_view_button"))
-    color_unwind = base + len(code)
-    # The native color routine has no .pdata entry. Its frame at the hook
-    # holds XMM6–15, eight general registers and a 0x100f8-byte allocation.
-    code.extend(bytes.fromhex(
-        "01 00 1e 00 "
-        "00 68 05 10  00 78 06 10  00 88 07 10  00 98 08 10  00 a8 09 10 "
-        "00 b8 0a 10  00 c8 0b 10  00 d8 0c 10  00 e8 0d 10  00 f8 0e 10 "
-        "00 01 1f 20  00 30  00 50  00 70  00 60  00 c0  00 d0  00 e0  00 f0"
-    ))
-    building_color_unwind = base + len(code)
-    # The final color lookup saves RSI, RDI, RBP and RBX.
-    code.extend(bytes.fromhex("01 00 04 00 00 30 00 50 00 70 00 60"))
-    statpanel_unwind = base + len(code)
-    code.extend(stock_unwind("statpanel_building_use"))
-    key_panel_unwind = base + len(code)
-    code.extend(stock_unwind("draw_building_type_key_panel"))
-    key_text_unwind = base + len(code)
-    code.extend(stock_unwind("draw_building_type_key_text"))
-    legend_unwind = base + len(code)
-    code.extend(bytes.fromhex("01 08 03 00 08 01 12 00 01 30 00 00"))
-    invalidate_unwind = base + len(code)
-    code.extend(stock_unwind("invalidate_inferred_building_uses"))
-    settings_unwind = {}
-    for name in SETTINGS_HOOKS:
-        settings_unwind[name] = base + len(code)
-        code.extend(stock_unwind(name))
-
-    injected_functions = []
+    injected_functions = append_unwind_info(code, labels, base, stock_unwind)
     for offset, size in pdata_ranges:
         injected_functions.extend(struct.iter_unpack("<III", code[offset:offset + size]))
-    for name, unwind in (
-        ("battle_start", battle_unwind),
-        ("sample_civilian", arming_unwind),
-        ("militia_source", arming_unwind),
-        ("count_living_militia", recount_unwind),
-        ("add_militia_after_tick", tick_unwind),
-        ("rank_completed_battle", ranking_unwind),
-        ("add_building_types_button", toolbar_unwind),
-        ("append_battle_view_button", battle_toolbar_unwind),
-        ("draw_three_view_buttons", toolbar_unwind),
-        ("lower_click_paint_rows", toolbar_unwind),
-        ("apply_building_type_colors", color_unwind),
-        ("prefer_building_type_color", building_color_unwind),
-        ("statpanel_building_use", statpanel_unwind),
-        ("draw_building_type_key_panel", key_panel_unwind),
-        ("draw_building_type_key_text", key_text_unwind),
-        ("draw_building_type_key", legend_unwind),
-        ("invalidate_inferred_building_uses", invalidate_unwind),
-        *settings_unwind.items(),
-    ):
-        if name in labels:
-            injected_functions.append((symbols[name], symbols[name + "_end"], unwind))
     new_pdata = base + len(code)
-    if runtime_state is None:
-        code.extend(original_table)
+    code.extend(original_table)
     for function in sorted(injected_functions):
         code.extend(struct.pack("<III", *function))
     new_pdata_size = base + len(code) - new_pdata
@@ -441,16 +441,6 @@ def patch_executable(stock, build, code, labels, relocs, pdata_ranges, rules, al
         branch_end = rva + len(opcode) + 4
         branch = opcode + struct.pack("<i", symbols[destination] - branch_end)
         edits.append((rva, expected, branch.ljust(len(expected), b"\x90")))
-
-    if runtime_state is not None:
-        patch = bytearray(struct.pack("<8s6I", b"ZARASI1\0", state, base - state, len(code),
-                                      new_pdata - base, len(injected_functions), len(edits)))
-        patch.extend(code)
-        for rva, expected, replacement in edits:
-            patch.extend(struct.pack("<II", rva, len(expected)))
-            patch.extend(expected)
-            patch.extend(replacement)
-        return patch
 
     result = bytearray(stock)
     for rva, expected, replacement in edits:
@@ -486,7 +476,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-only", action="store_true", help="Generate the game copy without launching it.")
     parser.add_argument("--save-settings", nargs="+", help=argparse.SUPPRESS)
-    parser.add_argument("--build-asi-patch", nargs=2, metavar=("RVA", "OUTPUT"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.save_settings is not None:
         save_menu_settings(MOD_DIR / "settings.ini", args.save_settings)
@@ -503,15 +492,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="zar-starting-militia-", dir=GAME_DIR) as temp:
         directory = Path(temp)
         code, labels, relocs, pdata_ranges = assemble(directory, build)
-        runtime_state = int(args.build_asi_patch[0], 16) if args.build_asi_patch else None
         patched = patch_executable(stock, build, code, labels, relocs, pdata_ranges,
-                                   rules, allow_coop, gis_maps, chances=chances, runtime_state=runtime_state,
-                                   enabled=enabled)
-        if args.build_asi_patch:
-            Path(args.build_asi_patch[1]).write_bytes(patched)
-            mode = "gameplay and settings" if enabled else "settings only (mod disabled)"
-            print(f"Prepared Armed Citizens Mod for v{build.version}: {mode}.", flush=True)
-            return
+                                   rules, allow_coop, gis_maps, chances=chances, enabled=enabled)
         if getattr(sys, "frozen", False):
             digest = hashlib.sha256(patched).hexdigest()
             executable = GAME_DIR / f"zombies-arent-real-militia-{digest[:16]}.exe"

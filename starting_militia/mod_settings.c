@@ -55,7 +55,11 @@ extern Byte settings_tab, settings_visible;
 extern const Byte settings_game_files_action;
 extern const Byte settings_layout_site[];
 extern const char mod_initial_settings[];
+#ifdef NATIVE_ASI
+extern int (*const native_save_settings)(const char *const *);
+#else
 extern const Wide mod_settings_command[];
+#endif
 extern ModSettings mod_settings_menu;
 
 extern void grow_toolbar(Widgets *, Size stride, Size alignment, Size capacity, const void *site, void *ctx);
@@ -67,6 +71,7 @@ extern float ui_text_position[2];
 extern UInt ui_text_color;
 extern const float ui_pixels_to_tiles;
 
+#ifndef NATIVE_ASI
 typedef struct {
     UInt size;
     Byte reserved[100];
@@ -83,6 +88,7 @@ __declspec(dllimport) int CloseHandle(void *);
 __declspec(dllimport) void *GetProcessHeap(void);
 __declspec(dllimport) void *HeapAlloc(void *, UInt flags, Size bytes);
 __declspec(dllimport) int HeapFree(void *, UInt flags, void *);
+#endif
 static void copy_bytes(void *out, const void *source, Size count)
 {
     Byte *destination = out;
@@ -158,6 +164,14 @@ static void initialize_values(void)
 static void save_settings(void)
 {
     ModSettings *menu = &mod_settings_menu;
+#ifdef NATIVE_ASI
+    const char *values[FIELD_COUNT];
+    for (unsigned field = 0; field < FIELD_COUNT; ++field)
+        values[field] = menu->changed & (1u << field) ? setting_value(field) : 0;
+    menu->status = native_save_settings(values) ? SAVE_DONE : SAVE_FAILED;
+    if (menu->status == SAVE_DONE)
+        menu->changed = 0;
+#else
     const Wide *base = mod_settings_command;
     Size size = 1;
     while (*base++)
@@ -201,10 +215,12 @@ static void save_settings(void)
         menu->status = SAVE_FAILED;
     }
     HeapFree(heap, 0, command);
+#endif
 }
 
 static void check_save_status(void)
 {
+#ifndef NATIVE_ASI
     ModSettings *menu = &mod_settings_menu;
     if (!menu->saving)
         return;
@@ -217,6 +233,7 @@ static void check_save_status(void)
     menu->status = polled && !exit_code ? SAVE_DONE : SAVE_FAILED;
     if (menu->status == SAVE_DONE)
         menu->changed = 0;
+#endif
 }
 
 static int map_id_character(unsigned c)

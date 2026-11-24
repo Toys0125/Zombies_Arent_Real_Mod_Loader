@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MOD_DIR = ROOT / "starting_militia"
 sys.path.insert(0, str(MOD_DIR))
 from launch import SUPPORTED_BUILDS, compile_objects
+from asi_payload import write_payload
 
 LOADER_RELEASE = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/download/v10.0.5"
 LOADER_ASSET = "Ultimate-ASI-Loader-NoPDB_x64.zip"
@@ -51,11 +52,12 @@ def msvc_environment():
 
 
 def build_asi(work):
+    write_payload(work)
     clang = shutil.which("clang-cl") or Path(os.environ["ProgramFiles"]) / "LLVM/bin/clang-cl.exe"
     output = work / "Armed Citizens Mod.asi"
     subprocess.run(
         [clang, "--target=x86_64-pc-windows-msvc", "/nologo", "/O2", "/W4", "/WX", "/MT", "/LD",
-         MOD_DIR / "asi_loader.c", "/link", f"/OUT:{output}"],
+         f"/I{work}", MOD_DIR / "asi_loader.c", MOD_DIR / "asi_config.c", "/link", f"/OUT:{output}", "bcrypt.lib"],
         cwd=work, env=msvc_environment(), check=True,
     )
     return output
@@ -96,7 +98,9 @@ def package_loader():
 def package_bundle():
     dist = ROOT / "dist"
     with ZipFile(dist / PLUGIN_ARCHIVE) as plugin, ZipFile(dist / LOADER_ARCHIVE) as loader:
-        if {"winhttp.dll", "licenses/Ultimate-ASI-Loader.txt"} & set(plugin.namelist()):
+        if {"winhttp.dll", "licenses/Ultimate-ASI-Loader.txt"} & set(plugin.namelist()) or any(
+            name.lower().endswith(".exe") for name in plugin.namelist()
+        ):
             raise ValueError("Rebuild the plugin-only archive with --asi before creating the bundle.")
         # Keep the shipped binaries identical in both install options.
         with release_archive(BUNDLE_ARCHIVE) as package:
@@ -115,15 +119,16 @@ def package_armed_citizens(asi):
     with tempfile.TemporaryDirectory(prefix="armed-citizens-release-") as temp:
         work = Path(temp)
         plugin = build_asi(work) if asi else None
-        objects = sorted({obj for build in SUPPORTED_BUILDS.values() for obj in compile_objects(work, build)})
-        command = [
-            sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--noupx",
-            "--name", "armed-citizens-launcher", "--distpath", str(work),
-            "--workpath", str(work / "build"), "--specpath", str(work),
-        ]
-        for obj in objects:
-            command.extend(("--add-data", f"{obj};."))
-        subprocess.run([*command, str(MOD_DIR / "launch.py")], cwd=work, check=True)
+        if not plugin:
+            objects = sorted({obj for build in SUPPORTED_BUILDS.values() for obj in compile_objects(work, build)})
+            command = [
+                sys.executable, "-m", "PyInstaller", "--noconfirm", "--onefile", "--noupx",
+                "--name", "armed-citizens-launcher", "--distpath", str(work),
+                "--workpath", str(work / "build"), "--specpath", str(work),
+            ]
+            for obj in objects:
+                command.extend(("--add-data", f"{obj};."))
+            subprocess.run([*command, str(MOD_DIR / "launch.py")], cwd=work, check=True)
 
         with release_archive(archive) as package:
             for name in ("README.md", "LICENSE"):
@@ -132,16 +137,17 @@ def package_armed_citizens(asi):
                 package.write(plugin, "scripts/" + plugin.name)
             else:
                 package.write(ROOT / "Play Armed Citizens Mod.cmd", "Play Armed Citizens Mod.cmd")
-            package.write(work / "armed-citizens-launcher.exe", "starting_militia/armed-citizens-launcher.exe")
+                package.write(work / "armed-citizens-launcher.exe", "starting_militia/armed-citizens-launcher.exe")
             for path in (MOD_DIR / "settings.ini", MOD_DIR / "san_francisco_gis.bin", *sorted((MOD_DIR / "gis").glob("*.bin"))):
                 package.write(path, path.relative_to(ROOT).as_posix())
-            python_license = Path(sys.base_prefix) / "LICENSE.txt"
-            if python_license.is_file():
-                package.write(python_license, "licenses/Python.txt")
-            pyinstaller = distribution("pyinstaller")
-            for license_file in pyinstaller.files or ():
-                if license_file.name.upper().startswith(("COPYING", "LICENSE")) and license_file.parts[0].endswith(".dist-info"):
-                    package.write(pyinstaller.locate_file(license_file), "licenses/" + license_file.name)
+            if not plugin:
+                python_license = Path(sys.base_prefix) / "LICENSE.txt"
+                if python_license.is_file():
+                    package.write(python_license, "licenses/Python.txt")
+                pyinstaller = distribution("pyinstaller")
+                for license_file in pyinstaller.files or ():
+                    if license_file.name.upper().startswith(("COPYING", "LICENSE")) and license_file.parts[0].endswith(".dist-info"):
+                        package.write(pyinstaller.locate_file(license_file), "licenses/" + license_file.name)
 
 
 def main():
