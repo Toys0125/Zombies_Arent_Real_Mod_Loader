@@ -1,0 +1,11 @@
+*.exe
+*.dll
+__pycache__/
+*.py[cod]
+/zar-starting-militia-*/
+/maps/
+/campaigns/
+/cache/
+/steam_cloud/
+/logs/
+/dist/
