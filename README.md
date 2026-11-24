@@ -74,3 +74,6 @@ The San Francisco cache also covers Presidio housing areas such as Baker Beach a
 ## License
 
 The mod code is licensed under the Apache License, Version 2.0. GIS source data and bundled dependencies are subject to their respective terms. [LICENSE](LICENSE)
+
+## AI Disclosure
+GPT-6.2-Sol was used in the making of this mod with integrative testing done personaly and few campaign maps.
